@@ -791,7 +791,9 @@
 (define (num-non-varargs args)
   (count (lambda (a) (not (vararg? a))) args))
 
-(define (new-call Tname type-params sparams params args field-names field-types)
+;; selftype?: tells us whether the called object is the type being constructed,
+;; i.e. `new()` and not `new{...}()`.
+(define (new-call Tname type-params sparams params args field-names field-types selftype?)
   (if (any kwarg? args)
       (error "\"new\" does not accept keyword arguments"))
   (let ((nnv (num-non-varargs type-params)))
@@ -801,9 +803,11 @@
         (error "too many type parameters specified in \"new{...}\"")))
   (let* ((Texpr (if (null? type-params)
                     `(outerref ,Tname)
-                    `(curly (outerref ,Tname)
-                            ,@type-params)))
-         (tn (make-ssavalue))
+                    (if selftype?
+                        '|#self#|
+                        `(curly (outerref ,Tname)
+                                ,@type-params))))
+         (tn (if (symbol? Texpr) Texpr (make-ssavalue)))
          (field-convert (lambda (fld fty val)
                           (if (equal? fty '(core Any))
                               val
@@ -823,7 +827,7 @@
                (let ((argt (make-ssavalue))
                      (nf (make-ssavalue)))
                  `(block
-                   (= ,tn ,Texpr)
+                   ,@(if (symbol? tn) '() `((= ,tn ,Texpr)))
                    (= ,argt (call (core tuple) ,@args))
                    (= ,nf (call (core nfields) ,argt))
                    (if (call (top ult_int) ,nf ,(length field-names))
@@ -835,9 +839,9 @@
                    (new ,tn ,@(map (lambda (fld fty) (field-convert fld fty `(call (core getfield) ,argt ,(+ fld 1) (false))))
                                    (iota (length field-names)) (list-head field-types (length field-names))))))))
           (else
-            `(block
-              (= ,tn ,Texpr)
-              (new ,tn ,@(map field-convert (iota (length args)) (list-head field-types (length args)) args)))))))
+           `(block
+             ,@(if (symbol? tn) '() `((= ,tn ,Texpr)))
+             (new ,tn ,@(map field-convert (iota (length args)) (list-head field-types (length args)) args)))))))
 
 ;; insert item at start of arglist
 (define (arglist-unshift sig item)
@@ -881,12 +885,12 @@
                        (call (-/ new) . args)
                        (new-call Tname type-params sparams params
                                  (map (lambda (a) (ctor-body a type-params sparams)) args)
-                                 field-names field-types))
+                                 field-names field-types #t))
                       (pattern-lambda
                        (call (curly (-/ new) . p) . args)
                        (new-call Tname p sparams params
                                  (map (lambda (a) (ctor-body a type-params sparams)) args)
-                                 field-names field-types)))
+                                 field-names field-types #f)))
                      body))
   (pattern-replace
    (pattern-set
